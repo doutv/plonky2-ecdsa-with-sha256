@@ -1,3 +1,5 @@
+use env_logger::{try_init_from_env, Env, DEFAULT_FILTER_ENV};
+use log::Level;
 use num::BigUint;
 use plonky2::{
     field::{
@@ -7,9 +9,11 @@ use plonky2::{
     iop::witness::PartialWitness,
     plonk::{
         circuit_builder::CircuitBuilder,
-        circuit_data::CircuitConfig,
+        circuit_data::{CircuitConfig, CircuitData},
         config::{GenericConfig, PoseidonGoldilocksConfig},
+        prover::prove,
     },
+    util::timing::TimingTree,
 };
 use plonky2_ecdsa::{
     curve::{
@@ -27,9 +31,10 @@ use plonky2_ecdsa::{
         CircuitBuilderHash,
     },
 };
-
 use sha2::{Digest, Sha256};
 fn main() {
+    let _ = try_init_from_env(Env::default().filter_or(DEFAULT_FILTER_ENV, "debug"));
+    
     let config = CircuitConfig::standard_ecc_config();
     const D: usize = 2;
     type C = PoseidonGoldilocksConfig;
@@ -84,11 +89,19 @@ fn main() {
     // signature verification circuit
     verify_message_circuit(&mut builder, msg_hash_field_target, sig_target, pk_target);
 
-    dbg!(builder.num_gates());
-    let data = builder.build::<C>();
-    let proof = data.prove(pw).unwrap();
-    println!("proof size: {}", proof.public_inputs.len());
-    assert!(data.verify(proof).is_ok());
+    builder.print_gate_counts(0);
+    let circuit = builder.build::<C>();
+    let CircuitData {
+        prover_only,
+        common,
+        verifier_only: _,
+    } = &circuit;
+
+    let mut timing = TimingTree::new("prove", Level::Debug);
+    let proof = prove(prover_only, common, pw, &mut timing).expect("prover failed");
+    timing.print();
+
+    assert!(circuit.verify(proof).is_ok());
 }
 
 // This is required since hash target as BigUint seems to be
